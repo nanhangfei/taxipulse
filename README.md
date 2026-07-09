@@ -8,7 +8,7 @@ quarantine, idempotent backfills, lineage, monitoring, CI, and IaC.
 MinIO · Kafka + Schema Registry · Airflow · Spark · Flink (PyFlink) ·
 SQL (Snowflake SQL / Flink SQL / dbt models) · Snowflake · dbt (+tests) ·
 Soda · Terraform · Prometheus/Grafana · OpenLineage/Marquez ·
-Docker Compose · GitHub Actions · Power BI (design docs)
+Docker Compose · GitHub Actions · Metabase (Stage 7) · Power BI (design docs)
 
 ### Versions
 
@@ -16,7 +16,7 @@ Docker Compose · GitHub Actions · Power BI (design docs)
 |---|---|---|
 | Python | 3.11 | `producer/Dockerfile`, CI |
 | Apache Airflow | 2.9.3 (python3.11 image) | `docker-compose.yml`, CI |
-| Apache Spark / PySpark | 3.5.1 (bitnami image) | `docker-compose.yml`, CI |
+| Apache Spark / PySpark | 3.5.1 (`bitnamilegacy` image — bitnami tags were pulled from Docker Hub in 2025) | `docker-compose.yml`, CI |
 | Apache Flink | 1.19 (scala 2.12, java 11) | `docker-compose.yml` |
 | Kafka (Confluent Platform) | cp 7.6.1 (≈ Kafka 3.6) | `docker-compose.yml` |
 | Schema Registry | cp 7.6.1 | `docker-compose.yml` |
@@ -227,8 +227,14 @@ and the lineage graph covers source → marts.
 failing Spark unit test.
 
 ### Stage 7 — Product polish: BI, docs, demo
-- [ ] Power BI dashboards built from `powerbi/DESIGN.md`: Import-mode batch
-      dashboard on MARTS, DirectQuery near-realtime dashboard on RT_DB
+- [ ] **Metabase** service added to docker-compose (decision 2026-07-10:
+      Metabase over Power BI as the runnable BI layer — Power BI Desktop is
+      Windows-only and this project is developed/demoed on macOS). Needs its
+      own Postgres metadata DB; host port 3002 (3000 = Marquez-web).
+- [ ] Dashboards built from the designs in `powerbi/DESIGN.md`: cached batch
+      dashboard on MARTS, live near-realtime dashboard on RT_DB
+- [ ] `powerbi/DESIGN.md` kept as the tool-agnostic design doc + "how this
+      maps to Power BI/DAX in an enterprise setting" translation
 - [ ] Architecture docs finalized; screenshots in README
 - [ ] Chaos pass: kill Kafka mid-replay, replay a duplicate month, malform a
       record — document that quarantine, idempotency, and reconciliation hold
