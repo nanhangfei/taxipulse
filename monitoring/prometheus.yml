@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: airflow          # via statsd-exporter bridge
+    static_configs:
+      - targets: ["statsd-exporter:9102"]
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

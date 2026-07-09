@@ -1,0 +1,17 @@
+# Soda = operational monitoring; deliberately complements (not repeats) dbt tests:
+# dbt tests   -> logical correctness at BUILD time
+# soda checks -> freshness / volume drift / distribution at RUNTIME
+checks for fct_trips:
+  - freshness(pickup_datetime) < 26h
+  - row_count > 0
+  # volume anomaly vs trailing history (catches silent partial loads)
+  - change avg last 7 for row_count < 20%
+  - missing_count(fare_amount) = 0
+  - duplicate_count(trip_sk) = 0
+  - min(fare_amount) >= 0
+  - max(trip_duration_minutes) < 300:
+      name: No absurd trip durations
+  - invalid_percent(payment_type) < 0.1%:
+      valid values: [1, 2, 3, 4, 5, 6]
+  # distribution drift on fares (schema-level silent corruption detector)
+  - avg(fare_amount) between 5 and 60

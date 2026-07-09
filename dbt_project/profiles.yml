@@ -1,0 +1,20 @@
+# Secrets via env_var() only — this file is safe to commit (gap fix #1).
+nyc_taxi:
+  target: dev
+  outputs:
+    dev: &sf
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      schema: dev
+      threads: 4
+    ci:
+      <<: *sf
+      schema: "ci_{{ env_var('GITHUB_RUN_ID', 'local') }}"   # isolated per CI run
+    prod:
+      <<: *sf
+      schema: prod

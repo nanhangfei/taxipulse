@@ -1,0 +1,74 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  # All secrets from GitHub Actions Secrets — never in the repo (gap fix #1)
+  SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_CI_USER }}
+  SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_CI_PASSWORD }}
+  SNOWFLAKE_ROLE:      TRANSFORMER_ROLE
+  SNOWFLAKE_WAREHOUSE: TRANSFORM_WH
+  SNOWFLAKE_DATABASE:  ANALYTICS_DB
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install ruff pytest pyspark==3.5.1
+      - run: ruff check spark_jobs producer flink_jobs airflow/dags
+      - run: pytest -q tests/ || test ! -d tests   # pass if no tests dir yet
+
+  dag-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install apache-airflow==2.9.3 apache-airflow-providers-snowflake
+      - name: DAGs import without errors
+        run: |
+          export AIRFLOW_HOME=$(mktemp -d)
+          airflow db migrate
+          python -c "
+          from airflow.models import DagBag
+          bag = DagBag('airflow/dags', include_examples=False)
+          assert not bag.import_errors, bag.import_errors
+          print(f'{len(bag.dags)} DAGs OK')"
+
+  dbt-ci:
+    runs-on: ubuntu-latest
+    # Builds into an ISOLATED schema per run (ci_<run_id>), then drops it.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install dbt-snowflake==1.8.3
+      - run: cd dbt_project && dbt deps
+      - run: cd dbt_project && dbt build --target ci --profiles-dir .
+      - name: cleanup ci schema
+        if: always()
+        run: |
+          cd dbt_project && dbt run-operation drop_ci_schema --target ci --profiles-dir . || true
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=terraform init -backend=false
+      - run: terraform -chdir=terraform validate
+      - run: terraform -chdir=terraform fmt -check
+
+  compose-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose build replay-producer
+      - run: docker compose config -q   # full stack config sanity

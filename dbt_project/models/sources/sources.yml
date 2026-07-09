@@ -1,0 +1,12 @@
+version: 2
+sources:
+  - name: tlc_raw
+    database: RAW_DB
+    schema: TLC
+    tables:
+      - name: fct_trips_raw
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: {count: 26, period: hour}
+          error_after: {count: 48, period: hour}
+      - name: zone_lookup

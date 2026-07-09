@@ -1,0 +1,16 @@
+{
+  "title": "Pipeline Health",
+  "uid": "pipeline-health",
+  "panels": [
+    {"title": "Airflow task failures (rate)", "type": "timeseries",
+     "targets": [{"expr": "rate(airflow_ti_failures[15m])"}],
+     "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}},
+    {"title": "Airflow task successes (rate)", "type": "timeseries",
+     "targets": [{"expr": "rate(airflow_ti_successes[15m])"}],
+     "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}},
+    {"title": "DAG run duration (s)", "type": "timeseries",
+     "targets": [{"expr": "airflow_dagrun_duration_success_monthly_batch_pipeline"}],
+     "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}}
+  ],
+  "schemaVersion": 39
+}

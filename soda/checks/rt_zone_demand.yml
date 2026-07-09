@@ -1,0 +1,4 @@
+checks for rt_zone_demand_5min:
+  - freshness(window_end) < 15m:
+      name: Speed layer is actually live
+  - row_count > 0
