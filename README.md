@@ -16,7 +16,7 @@ Docker Compose · GitHub Actions · Power BI (design docs)
 |---|---|---|
 | Python | 3.11 | `producer/Dockerfile`, CI |
 | Apache Airflow | 2.9.3 (python3.11 image) | `docker-compose.yml`, CI |
-| Apache Spark / PySpark | 3.5.1 (bitnami image) | `docker-compose.yml`, CI |
+| Apache Spark / PySpark | 3.5.1 (`bitnamilegacy` image — bitnami tags were pulled from Docker Hub in 2025) | `docker-compose.yml`, CI |
 | Apache Flink | 1.19 (scala 2.12, java 11) | `docker-compose.yml` |
 | Kafka (Confluent Platform) | cp 7.6.1 (≈ Kafka 3.6) | `docker-compose.yml` |
 | Schema Registry | cp 7.6.1 | `docker-compose.yml` |
