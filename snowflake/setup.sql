@@ -1,0 +1,118 @@
+-- TaxiPulse Snowflake bootstrap (Stage 1)
+-- Run the whole script as ACCOUNTADMIN in a Snowflake worksheet.
+-- Idempotent: every statement is IF NOT EXISTS or a re-runnable GRANT,
+-- so running it twice changes nothing.
+--
+-- In production these statements would be split across roles:
+-- SYSADMIN owns objects, SECURITYADMIN owns roles/grants,
+-- ACCOUNTADMIN only for the resource monitor.
+
+USE ROLE ACCOUNTADMIN;
+
+-- ---------------------------------------------------------------- databases
+CREATE DATABASE IF NOT EXISTS RAW_DB
+  COMMENT = 'Landing zone loaded by Airflow COPY INTO from MinIO gold';
+CREATE DATABASE IF NOT EXISTS ANALYTICS_DB
+  COMMENT = 'dbt-managed: staging / intermediate / marts';
+CREATE DATABASE IF NOT EXISTS RT_DB
+  COMMENT = 'Flink speed-layer tables';
+
+CREATE SCHEMA IF NOT EXISTS RAW_DB.TLC;
+
+-- Staging-layer data is regenerable -> transient schema (no Fail-safe cost)
+CREATE TRANSIENT SCHEMA IF NOT EXISTS ANALYTICS_DB.STAGING;
+CREATE SCHEMA IF NOT EXISTS ANALYTICS_DB.MARTS;
+
+-- --------------------------------------------------------------- warehouses
+-- One warehouse per workload: isolation + per-workload cost attribution.
+-- auto_suspend 60s + auto_resume = FinOps default for a dev account.
+CREATE WAREHOUSE IF NOT EXISTS LOAD_WH
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Airflow COPY INTO';
+CREATE WAREHOUSE IF NOT EXISTS TRANSFORM_WH
+  WAREHOUSE_SIZE = SMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'dbt builds';
+CREATE WAREHOUSE IF NOT EXISTS BI_WH
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'BI queries (Metabase, Stage 7)';
+
+-- ---------------------------------------------------- FinOps guardrail
+-- Hard monthly credit cap with notifications; attached at account level so
+-- every warehouse (including ones created later) is covered.
+CREATE RESOURCE MONITOR IF NOT EXISTS PLATFORM_MONTHLY_CAP
+  WITH CREDIT_QUOTA = 100
+  FREQUENCY = MONTHLY
+  START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 50 PERCENT DO NOTIFY
+           ON 80 PERCENT DO NOTIFY
+           ON 95 PERCENT DO SUSPEND;
+ALTER ACCOUNT SET RESOURCE_MONITOR = PLATFORM_MONTHLY_CAP;
+
+-- ------------------------------------------------- least-privilege roles
+-- Functional roles; service users get exactly one role each.
+CREATE ROLE IF NOT EXISTS LOADER_ROLE
+  COMMENT = 'Airflow: write RAW_DB only';
+CREATE ROLE IF NOT EXISTS TRANSFORMER_ROLE
+  COMMENT = 'dbt: read RAW_DB, write ANALYTICS_DB';
+CREATE ROLE IF NOT EXISTS REPORTER_ROLE
+  COMMENT = 'BI: read MARTS only';
+
+-- Roles roll up to SYSADMIN so admins can see/manage everything they create
+GRANT ROLE LOADER_ROLE      TO ROLE SYSADMIN;
+GRANT ROLE TRANSFORMER_ROLE TO ROLE SYSADMIN;
+GRANT ROLE REPORTER_ROLE    TO ROLE SYSADMIN;
+
+-- ---------------------------------------------------------- service users
+-- One service user per role; tools log in as these, never as your admin
+-- user. REPLACE THE PASSWORDS BEFORE RUNNING and keep the real values in
+-- .env only — never commit them. (LOADER_SVC is used from Stage 3 by
+-- Airflow, REPORTER_SVC from Stage 6 by Metabase; created now so this
+-- script only needs to run once.)
+CREATE USER IF NOT EXISTS TRANSFORMER_SVC
+  PASSWORD = 'change-me-transformer'
+  DEFAULT_ROLE = TRANSFORMER_ROLE DEFAULT_WAREHOUSE = TRANSFORM_WH
+  MUST_CHANGE_PASSWORD = FALSE
+  COMMENT = 'dbt';
+CREATE USER IF NOT EXISTS LOADER_SVC
+  PASSWORD = 'change-me-loader'
+  DEFAULT_ROLE = LOADER_ROLE DEFAULT_WAREHOUSE = LOAD_WH
+  MUST_CHANGE_PASSWORD = FALSE
+  COMMENT = 'Airflow COPY INTO (Stage 3)';
+CREATE USER IF NOT EXISTS REPORTER_SVC
+  PASSWORD = 'change-me-reporter'
+  DEFAULT_ROLE = REPORTER_ROLE DEFAULT_WAREHOUSE = BI_WH
+  MUST_CHANGE_PASSWORD = FALSE
+  COMMENT = 'Metabase (Stage 6)';
+GRANT ROLE TRANSFORMER_ROLE TO USER TRANSFORMER_SVC;
+GRANT ROLE LOADER_ROLE      TO USER LOADER_SVC;
+GRANT ROLE REPORTER_ROLE    TO USER REPORTER_SVC;
+
+-- Each role may use exactly its own warehouse
+GRANT USAGE ON WAREHOUSE LOAD_WH      TO ROLE LOADER_ROLE;
+GRANT USAGE ON WAREHOUSE TRANSFORM_WH TO ROLE TRANSFORMER_ROLE;
+GRANT USAGE ON WAREHOUSE BI_WH        TO ROLE REPORTER_ROLE;
+
+-- LOADER: write RAW_DB.TLC (needs USAGE on the database too)
+GRANT USAGE ON DATABASE RAW_DB TO ROLE LOADER_ROLE;
+GRANT USAGE, CREATE TABLE, CREATE STAGE, CREATE FILE FORMAT
+  ON SCHEMA RAW_DB.TLC TO ROLE LOADER_ROLE;
+
+-- TRANSFORMER: read RAW, own ANALYTICS
+GRANT USAGE ON DATABASE RAW_DB TO ROLE TRANSFORMER_ROLE;
+GRANT USAGE ON SCHEMA RAW_DB.TLC TO ROLE TRANSFORMER_ROLE;
+GRANT SELECT ON ALL TABLES    IN SCHEMA RAW_DB.TLC TO ROLE TRANSFORMER_ROLE;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA RAW_DB.TLC TO ROLE TRANSFORMER_ROLE;
+GRANT USAGE, CREATE SCHEMA ON DATABASE ANALYTICS_DB TO ROLE TRANSFORMER_ROLE;
+GRANT ALL ON SCHEMA ANALYTICS_DB.STAGING TO ROLE TRANSFORMER_ROLE;
+GRANT ALL ON SCHEMA ANALYTICS_DB.MARTS   TO ROLE TRANSFORMER_ROLE;
+
+-- REPORTER: read-only on marts (future grant covers tables dbt creates later)
+GRANT USAGE ON DATABASE ANALYTICS_DB TO ROLE REPORTER_ROLE;
+GRANT USAGE ON SCHEMA ANALYTICS_DB.MARTS TO ROLE REPORTER_ROLE;
+GRANT SELECT ON ALL TABLES    IN SCHEMA ANALYTICS_DB.MARTS TO ROLE REPORTER_ROLE;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA ANALYTICS_DB.MARTS TO ROLE REPORTER_ROLE;
+GRANT SELECT ON ALL VIEWS     IN SCHEMA ANALYTICS_DB.MARTS TO ROLE REPORTER_ROLE;
+GRANT SELECT ON FUTURE VIEWS  IN SCHEMA ANALYTICS_DB.MARTS TO ROLE REPORTER_ROLE;

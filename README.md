@@ -2,13 +2,13 @@
 
 Lambda-architecture data platform on the NYC TLC trip dataset — batch +
 streaming with reconciliation, built to production conventions: contracts,
-quarantine, idempotent backfills, lineage, monitoring, CI, and IaC.
+quarantine, idempotent backfills, lineage, monitoring, and CI.
 
 ## Stack
 MinIO · Kafka + Schema Registry · Airflow · Spark · Flink (PyFlink) ·
 SQL (Snowflake SQL / Flink SQL / dbt models) · Snowflake · dbt (+tests) ·
-Soda · Terraform · Prometheus/Grafana · OpenLineage/Marquez ·
-Docker Compose · GitHub Actions · Metabase (Stage 7) · Power BI (design docs)
+Soda · Prometheus/Grafana · OpenLineage/Marquez ·
+Docker Compose · GitHub Actions · Metabase (Stage 6) · Power BI (design docs)
 
 ### Versions
 
@@ -29,8 +29,6 @@ Docker Compose · GitHub Actions · Metabase (Stage 7) · Power BI (design docs)
 | Vault | 1.17 | `docker-compose.yml` |
 | dbt (dbt-snowflake) | 1.8.3 | CI (`.github/workflows/ci.yml`) |
 | dbt_utils package | 1.2.0 | `dbt_project/packages.yml` |
-| Terraform | >= 1.7 | `terraform/versions.tf` |
-| Snowflake provider | ~> 0.94 (Snowflake-Labs) | `terraform/versions.tf` |
 | confluent-kafka (Python, +avro) | 2.4.0 | `producer/requirements.txt` |
 | pyarrow / pandas | 16.1.0 / 2.2.2 | `producer/requirements.txt` |
 | Soda Core | *not pinned yet* | — (installed ad hoc by `make soda-scan`) |
@@ -38,7 +36,7 @@ Docker Compose · GitHub Actions · Metabase (Stage 7) · Power BI (design docs)
 
 Floating tags to be aware of: `flink:1.19` and `postgres:15` track the latest
 patch release, `vault:1.17` the latest minor patch; Soda has no pin at all.
-Tightening these is part of Stage 6 (pinned-versions review).
+Tightening these is part of Stage 5 (pinned-versions review).
 
 **Processing split:** Spark (DataFrame API) handles lake-layer heavy lifting —
 parsing, validation, quarantine, partitioned writes. Once data reaches the
@@ -48,7 +46,7 @@ the streaming job is written in Flink SQL, not the DataStream API.
 
 ## Architecture
 ```
-TLC parquet ─► Spark ─► MinIO bronze/silver/gold ─► Snowflake ─► dbt ─► marts ─► Power BI
+TLC parquet ─► Spark ─► MinIO bronze/silver/gold ─► Snowflake ─► dbt ─► marts ─► Metabase
                                     ▲                              │
 Replay producer ─► Kafka(Avro+SR) ─► Flink ─► realtime/ ─► RT_DB ──┴─► reconciliation DAG
 ```
@@ -68,14 +66,16 @@ Replay producer ─► Kafka(Avro+SR) ─► Flink ─► realtime/ ─► RT_DB
 | Lineage | OpenLineage from Airflow & Spark → Marquez UI |
 | Monitoring | StatsD → Prometheus → Grafana; Slack on_failure_callback |
 | Recon | `lambda_reconciliation` DAG: speed vs batch counts within 1% |
-| IaC | Terraform: DBs, warehouses (auto-suspend 60s), RBAC, resource monitor |
+| Warehouse setup | `snowflake/setup.sql`: DBs, warehouses (auto-suspend 60s), RBAC, resource monitor |
 | FinOps | warehouse-per-workload, monthly credit cap, transient staging schema |
-| CI | ruff, pytest, DAG import test, dbt build in isolated schema, tf validate |
+| CI | ruff, pytest, DAG import test, dbt build in isolated schema |
 
-## Power BI (design docs)
-`powerbi/` — star-schema mapping, DAX measure definitions, Import vs
-DirectQuery rationale, dashboard screenshots. Batch dashboard = Import on
-MARTS; near-realtime dashboard = DirectQuery on RT_DB.
+## BI layer
+The runnable dashboards are **Metabase** (added in Stage 6): a cached batch
+dashboard on MARTS and a live one on RT_DB. `powerbi/DESIGN.md` is the
+tool-agnostic dashboard design plus its enterprise Power BI translation —
+star-schema mapping, DAX measures, Import (MARTS) vs DirectQuery (RT_DB)
+rationale.
 
 ## Build roadmap
 
@@ -122,7 +122,8 @@ Then edit `.env`:
   URI — update it to match your `MINIO_ROOT_PASSWORD`, or Spark/Airflow won't
   reach MinIO later.
 - The Snowflake block and `SLACK_WEBHOOK_URL` can stay as placeholders —
-  nothing in Stage 0 touches them (they matter in Stages 3 and 5).
+  nothing in Stage 0 touches them (Snowflake matters from Stage 1,
+  Slack alerts at Stage 4).
 
 #### 3. Download the data
 
@@ -134,8 +135,9 @@ ls -lh data/   # expect two files with real sizes (~48 MB parquet + small CSV)
 #### 4. Bring the stack up and verify
 
 Prerequisite: Docker Desktop running with **at least 8 GB memory allocated**
-(Settings → Resources). The stack runs ~12 containers; the default 2 GB
-allocation causes confusing OOM kills.
+(Settings → Resources). The stack runs ~15 containers (streaming services —
+replay producer + Flink — are behind a compose `streaming` profile and don't
+start until Stage 7); the default 2 GB allocation causes confusing OOM kills.
 
 ```bash
 make up            # first run builds images — takes a while
@@ -148,7 +150,8 @@ Verification checklist:
 - [ ] MinIO console at http://localhost:9001 shows bronze/silver/gold/quarantine
       buckets (auto-created by the `mc` init container)
 - [ ] Schema Registry http://localhost:8081/subjects returns `[]`
-- [ ] Grafana :3001 · Marquez :3000 · Prometheus :9090 · Flink :8083 reachable
+- [ ] Grafana :3001 · Marquez :3000 · Prometheus :9090 reachable
+      (Flink :8083 only appears under `make up-streaming`, Stage 7)
 
 #### Common failure modes
 
@@ -156,57 +159,80 @@ Verification checklist:
 |---|---|
 | Container fails to bind port | Something local already uses 8080/3000/9090 — `lsof -i :8080` |
 | Airflow UI 502s | Init container not finished — `docker compose logs airflow-init` |
-| Flink unhealthy | Missing Kafka/Avro connector JARs — known TODO, fixed in Stage 4; for Stage 0 it only needs to start |
+| Flink unhealthy (streaming profile) | Missing Kafka/Avro connector JARs — known TODO, fixed in Stage 7; before then it only needs to start |
 | Containers randomly dying | Docker memory allocation too low |
 
 </details>
 
-### Stage 1 — Batch lake path: Spark bronze → silver → gold
+### Stage 1 — Warehouse & modeling: Snowflake + dbt
+This stage needs only a Snowflake account — no Docker services. Until the
+lake path exists (Stage 2), raw data is loaded into Snowflake directly; dbt
+models read it through a `source()`, so re-pointing them at the gold-fed
+table later is close to a config-only change.
+
+- [ ] `snowflake/setup.sql` runs cleanly in a worksheet: databases, warehouses
+      (auto-suspend), least-privilege roles + service users, resource monitor
+      (replace the `change-me-*` passwords first; real values live in `.env`)
+- [ ] dbt installed locally in its own venv: `pip install
+      dbt-snowflake==1.8.3` (same pin as CI; it is not in the Airflow
+      image until Stage 3)
+- [ ] dbt connects to Snowflake: fill the `SNOWFLAKE_*` block in `.env`
+      (user `TRANSFORMER_SVC`, role `TRANSFORMER_ROLE`, warehouse
+      `TRANSFORM_WH`), load it into the shell (`set -a; source .env; set +a`),
+      then `dbt debug --profiles-dir .` from `dbt_project/` is green —
+      `profiles.yml` is committed and reads only env vars, no secrets in git
+- [ ] Raw January parquet loaded into `RAW_DB.TLC` (`PUT` to an internal
+      stage + `COPY INTO`), then normalized in SQL to the schema `stg_trips`
+      expects: rename/cast the raw TLC columns (`tpep_pickup_datetime` →
+      `pickup_datetime`, `PULocationID` → `pickup_zone_id`, …) and add
+      `year`, `month`, `_ingested_at`
+- [ ] `taxi_zone_lookup.csv` loaded into `RAW_DB.TLC.ZONE_LOOKUP` —
+      `dim_zones` reads it, so `dbt build` cannot go green without it
+- [ ] Staging filters out invalid rows (negative fares, zero/negative
+      duration, …) so dbt tests pass — the raw file contains them; from
+      Stage 2 the lake path delivers pre-cleaned data and these filters
+      become harmless no-ops
+- [ ] dbt: `stg_trips` → `fct_trips`/`dim_zones`, plus the missing `dim_date`
+- [ ] `dbt build` green: all models materialize and all tests pass
+- [ ] Loads are idempotent (re-running the raw load + `dbt build` changes
+      nothing; dbt merge)
+
+**Done when:** `dbt build` succeeds against Snowflake on the directly-loaded
+raw data, and a second load + build run is a no-op.
+
+### Stage 2 — Batch lake path: Spark bronze → silver → gold
 - [ ] `ingest_bronze.py` lands raw parquet in MinIO bronze, partitioned by month
 - [ ] `transform_silver.py` cleans/validates; rejects go to quarantine **with
       reject reasons**, never dropped
 - [ ] `load_gold.py` writes aggregates with dynamic partition overwrite
 - [ ] Re-running the same month twice produces identical output (idempotency
       proven, not assumed)
+- [ ] Gold → Snowflake load path works — Snowflake (SaaS) cannot reach local
+      MinIO, so either `PUT` gold files to an internal stage (reusing the
+      Stage 1 pattern) or move the lake to real S3 with `CREATE STAGE`;
+      idempotent via DELETE+COPY per month
+- [ ] dbt `source()` re-pointed from the Stage 1 raw table to the gold-fed
+      table; marts row counts reconcile with gold-layer counts
 
-**Done when:** one month flows raw → gold by hand-running the three jobs, and a
-deliberately corrupted record shows up in quarantine with its reason.
+**Done when:** one month flows raw → gold by hand-running the three jobs, a
+deliberately corrupted record shows up in quarantine with its reason, and
+`dbt build` is green on top of the gold-fed source.
 
-### Stage 2 — Orchestration: Airflow owns the batch path
-- [ ] `monthly_batch_pipeline` DAG runs Stage 1 end-to-end on a schedule
+### Stage 3 — Orchestration: Airflow owns the batch path
+- [ ] `monthly_batch_pipeline` DAG runs Stage 2 end-to-end on a schedule
+      (Spark jobs + Snowflake load + dbt build)
 - [ ] Backfill works: `airflow dags backfill -s 2024-01-01 -e 2024-03-01`
-      loads three months without duplicates
+      loads three months without duplicates (`make init-data` only downloads
+      January — fetch the 2024-02/03 parquet files first)
 - [ ] Failure of any task is visible in the UI and retries sensibly
 
 **Done when:** three months are loaded via backfill and a re-run of the whole
 DAG changes nothing (row counts stable).
 
-### Stage 3 — Warehouse & modeling: Snowflake + dbt
-- [ ] Terraform applies cleanly: databases, warehouses (auto-suspend), RBAC,
-      resource monitor
-- [ ] Gold → Snowflake load path works (`CREATE STAGE` on MinIO, or switch to
-      real S3 — currently a known TODO)
-- [ ] dbt: `stg_trips` → `fct_trips`/`dim_zones`, plus the missing `dim_date`
-- [ ] `dbt build` green: all models materialize and all tests pass
-- [ ] Loads are idempotent (DELETE+COPY per month; dbt merge)
-
-**Done when:** `dbt build` succeeds against Snowflake and marts row counts
-reconcile with gold-layer counts.
-
-### Stage 4 — Streaming path: Kafka → Flink → realtime marts
-- [ ] Replay producer emits Avro events through Schema Registry with realistic
-      event-time skew and bursts; late/bad events go to DLQ/late topics
-- [ ] Custom Flink image with Kafka/Avro connector JARs (known TODO)
-- [ ] `zone_demand.py` computes 5-min zone counts into `realtime/` → RT_DB
-- [ ] `lambda_reconciliation` DAG compares speed vs batch counts, alerts
-      beyond 1% tolerance
-
-**Done when:** producer replays a day of data, Flink output lands in RT_DB,
-and the reconciliation DAG passes within tolerance.
-
-### Stage 5 — Quality gates & observability
+### Stage 4 — Quality gates & observability
 - [ ] Soda runtime checks wired into Airflow: freshness, volume, distribution
-      drift on `fct_trips` and `rt_zone_demand`
+      drift on `fct_trips` (the `rt_zone_demand` check joins in Stage 7 with
+      the streaming path)
 - [ ] OpenLineage events from Airflow and Spark visible as a full graph in
       Marquez
 - [ ] Grafana `pipeline_health` dashboard shows live pipeline metrics;
@@ -216,30 +242,52 @@ and the reconciliation DAG passes within tolerance.
 **Done when:** killing a service or feeding bad data produces a visible alert
 and the lineage graph covers source → marts.
 
-### Stage 6 — Testing & CI/CD
+### Stage 5 — Testing & CI/CD
 - [ ] pytest suite for Spark jobs (known TODO): transform logic, quarantine
       rules, idempotency — runnable locally and in CI
 - [ ] CI green end-to-end: ruff, pytest, DAG import test, dbt build in an
-      isolated CI schema (dropped afterwards), `terraform validate`
+      isolated CI schema (dropped afterwards)
 - [ ] Pinned versions reviewed and bumped where needed
 
 **Done when:** a PR cannot merge with a broken DAG, failing dbt test, or
 failing Spark unit test.
 
-### Stage 7 — Product polish: BI, docs, demo
-- [ ] **Metabase** service added to docker-compose (decision 2026-07-10:
-      Metabase over Power BI as the runnable BI layer — Power BI Desktop is
-      Windows-only and this project is developed/demoed on macOS). Needs its
-      own Postgres metadata DB; host port 3002 (3000 = Marquez-web).
-- [ ] Dashboards built from the designs in `powerbi/DESIGN.md`: cached batch
-      dashboard on MARTS, live near-realtime dashboard on RT_DB
+### Stage 6 — Product polish: BI, docs, demo
+- [ ] **Metabase** service added to docker-compose as the runnable BI layer
+      (Power BI Desktop is Windows-only; this project is developed on macOS).
+      Needs its own Postgres metadata DB; host port 3002 (3000 = Marquez-web).
+- [ ] Cached batch dashboard on MARTS, built from the designs in
+      `powerbi/DESIGN.md` (the live near-realtime dashboard on RT_DB joins
+      in Stage 7 with the streaming path)
 - [ ] `powerbi/DESIGN.md` kept as the tool-agnostic design doc + "how this
       maps to Power BI/DAX in an enterprise setting" translation
 - [ ] Architecture docs finalized; screenshots in README
-- [ ] Chaos pass: kill Kafka mid-replay, replay a duplicate month, malform a
-      record — document that quarantine, idempotency, and reconciliation hold
+- [ ] Chaos pass (batch scope): replay a duplicate month, malform a record —
+      document that quarantine and idempotency hold
 - [ ] Cost review: warehouse auto-suspend and credit caps verified in practice
 
-**Done when:** a stranger can clone the repo, follow Quick start, and see data
-flowing into dashboards — and the failure-mode story is documented, not just
-claimed.
+**Done when:** a stranger can clone the repo, follow the setup docs, and see
+data flowing into a dashboard — the batch platform is a complete, demo-able
+product on its own.
+
+### Stage 7 — Streaming capstone: Kafka → Flink → realtime marts
+The batch product ships first (Stages 1–6); the speed layer upgrades it to
+full lambda architecture as a capstone. Kafka, Schema Registry, and the
+topics have been running since Stage 0, but the replay producer and Flink
+sit behind the compose `streaming` profile — they don't run at all until
+this stage. Start everything with `make up-streaming`.
+
+- [ ] Replay producer emits Avro events through Schema Registry with realistic
+      event-time skew and bursts; late/bad events go to DLQ/late topics
+- [ ] Custom Flink image with Kafka/Avro connector JARs (known TODO)
+- [ ] `zone_demand.py` computes 5-min zone counts into `realtime/` → RT_DB
+- [ ] `lambda_reconciliation` DAG compares speed vs batch counts, alerts
+      beyond 1% tolerance
+- [ ] Soda checks extended to `rt_zone_demand`
+- [ ] Live near-realtime Metabase dashboard on RT_DB
+- [ ] Chaos pass (streaming scope): kill Kafka mid-replay — document that
+      recovery and reconciliation hold
+
+**Done when:** producer replays a day of data, Flink output lands in RT_DB,
+the reconciliation DAG passes within tolerance, and the live dashboard moves
+while the replay runs.

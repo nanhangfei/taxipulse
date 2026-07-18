@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir \
       apache-airflow-providers-openlineage \
       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.9.3/constraints-3.11.txt"
 
-# dbt (Stage 3) and Soda (Stage 5) are NOT in this image yet. Installing
+# dbt (Stage 3) and Soda (Stage 4) are NOT in this image yet. Installing
 # dbt-snowflake + soda-core-snowflake together is unresolvable for pip
 # (ResolutionTooDeep — conflicting pins on snowflake-connector/protobuf/otel).
 # When those stages arrive, give each its own venv built from a compiled

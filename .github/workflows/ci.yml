@@ -56,15 +56,6 @@ jobs:
         run: |
           cd dbt_project && dbt run-operation drop_ci_schema --target ci --profiles-dir . || true
 
-  terraform-plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - run: terraform -chdir=terraform init -backend=false
-      - run: terraform -chdir=terraform validate
-      - run: terraform -chdir=terraform fmt -check
-
   compose-build:
     runs-on: ubuntu-latest
     steps:

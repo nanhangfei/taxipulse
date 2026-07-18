@@ -1,10 +1,13 @@
-.PHONY: up down init-data lint test dbt-build soda-scan
+.PHONY: up up-streaming down init-data lint test dbt-build soda-scan
 
-up:
+up:                   ## batch stack only; streaming services are behind a profile until Stage 7
 	docker compose up -d --build
 
+up-streaming:         ## Stage 7: batch stack + replay producer + Flink
+	docker compose --profile streaming up -d --build
+
 down:
-	docker compose down -v
+	docker compose --profile streaming down -v
 
 init-data:            ## download one month of TLC data for the replay producer & Spark
 	mkdir -p data
