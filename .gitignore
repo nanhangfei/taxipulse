@@ -1,8 +1,10 @@
 .env
+.venv/
 *.pyc
 __pycache__/
 data/*.parquet
 dbt_project/target/
 dbt_project/dbt_packages/
 dbt_project/logs/
+dbt_project/.user.yml
 logs/

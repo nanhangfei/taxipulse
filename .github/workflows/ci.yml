@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: pip install dbt-snowflake==1.8.3
+      - run: pip install dbt-snowflake==1.12.0
       - run: cd dbt_project && dbt deps
       - run: cd dbt_project && dbt build --target ci --profiles-dir .
       - name: cleanup ci schema

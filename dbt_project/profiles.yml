@@ -1,4 +1,6 @@
 # Secrets via env_var() only — this file is safe to commit (gap fix #1).
+# Key-pair auth: Snowflake blocks single-factor password logins, so the
+# connection uses a private key (path in .env, key file itself never committed).
 nyc_taxi:
   target: dev
   outputs:
@@ -6,15 +8,15 @@ nyc_taxi:
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('SNOWFLAKE_USER') }}"
-      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
       role: "{{ env_var('SNOWFLAKE_ROLE') }}"
       warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
       database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
-      schema: dev
-      threads: 4
+      schema: "{{ env_var('DBT_SCHEMA', 'dbt') }}"
+      threads: 8
     ci:
       <<: *sf
       schema: "ci_{{ env_var('GITHUB_RUN_ID', 'local') }}"   # isolated per CI run
     prod:
       <<: *sf
-      schema: prod
+      schema: marts

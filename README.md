@@ -27,8 +27,8 @@ Docker Compose · GitHub Actions · Metabase (Stage 6) · Power BI (design docs)
 | statsd-exporter | v0.29.0 (v0.30.0 has no Docker Hub image yet) | `docker-compose.yml` |
 | Grafana | 13.1.1 | `docker-compose.yml` |
 | Vault | 1.20.4 | `docker-compose.yml` |
-| dbt (dbt-snowflake) | 1.8.3 | CI (`.github/workflows/ci.yml`) |
-| dbt_utils package | 1.2.0 | `dbt_project/packages.yml` |
+| dbt (dbt-snowflake) | 1.12.0 (pulls dbt-core 1.12) | CI (`.github/workflows/ci.yml`) |
+| dbt_utils package | 1.4.1 | `dbt_project/packages.yml` |
 | confluent-kafka (Python, +avro) | 2.4.0 | `producer/requirements.txt` |
 | pyarrow / pandas | 16.1.0 / 2.2.2 | `producer/requirements.txt` |
 | Soda Core | *not pinned yet* | — (installed ad hoc by `make soda-scan`) |
@@ -153,35 +153,45 @@ lake path exists (Stage 2), raw data is loaded into Snowflake directly; dbt
 models read it through a `source()`, so re-pointing them at the gold-fed
 table later is close to a config-only change.
 
-- [ ] `snowflake/setup.sql` runs cleanly in a worksheet: databases, warehouses
-      (auto-suspend), least-privilege roles + service users, resource monitor
-      (replace the `change-me-*` passwords first; real values live in `.env`)
-- [ ] dbt installed locally in its own venv: `pip install
-      dbt-snowflake==1.8.3` (same pin as CI; it is not in the Airflow
+> **Adapted setup:** this build connects to an existing Snowflake account with
+> **key-pair auth** (Snowflake now blocks single-factor password logins) and
+> reuses its objects — database `analytics`, schema `raw`, role `transformer`,
+> warehouse `transforming`. The production-RBAC design in `snowflake/setup.sql`
+> (`RAW_DB`/`ANALYTICS_DB`, per-workload warehouses, least-privilege service
+> users, monthly resource monitor) is kept as a reference but not run here.
+> dbt materializes into `dbt_staging` / `dbt_marts` (profile schema + model schema).
+
+- [x] dbt installed locally in its own venv: `pip install
+      dbt-snowflake==1.12.0` (same pin as CI; it is not in the Airflow
       image until Stage 3)
-- [ ] dbt connects to Snowflake: fill the `SNOWFLAKE_*` block in `.env`
-      (user `TRANSFORMER_SVC`, role `TRANSFORMER_ROLE`, warehouse
-      `TRANSFORM_WH`), load it into the shell (`set -a; source .env; set +a`),
-      then `dbt debug --profiles-dir .` from `dbt_project/` is green —
-      `profiles.yml` is committed and reads only env vars, no secrets in git
-- [ ] Raw January parquet loaded into `RAW_DB.TLC` (`PUT` to an internal
-      stage + `COPY INTO`), then normalized in SQL to the schema `stg_trips`
-      expects: rename/cast the raw TLC columns (`tpep_pickup_datetime` →
-      `pickup_datetime`, `PULocationID` → `pickup_zone_id`, …) and add
-      `year`, `month`, `_ingested_at`
-- [ ] `taxi_zone_lookup.csv` loaded into `RAW_DB.TLC.ZONE_LOOKUP` —
-      `dim_zones` reads it, so `dbt build` cannot go green without it
-- [ ] Staging filters out invalid rows (negative fares, zero/negative
-      duration, …) so dbt tests pass — the raw file contains them; from
-      Stage 2 the lake path delivers pre-cleaned data and these filters
-      become harmless no-ops
-- [ ] dbt: `stg_trips` → `fct_trips`/`dim_zones`, plus the missing `dim_date`
-- [ ] `dbt build` green: all models materialize and all tests pass
-- [ ] Loads are idempotent (re-running the raw load + `dbt build` changes
-      nothing; dbt merge)
+- [x] dbt connects to Snowflake via **key-pair**: fill the `SNOWFLAKE_*` block
+      in `.env` (`SNOWFLAKE_PRIVATE_KEY_PATH` points at the PEM/p8 key, which
+      stays out of the repo), load it (`set -a; source .env; set +a`), then
+      `dbt debug --profiles-dir .` from `dbt_project/` is green — committed
+      `profiles.yml` reads only env vars, no secrets in git
+- [x] Raw January parquet loaded into `analytics.raw.fct_trips_raw`, normalized
+      to the schema `stg_trips` expects: rename/cast raw TLC columns
+      (`tpep_pickup_datetime` → `pickup_datetime`, `PULocationID` →
+      `pickup_zone_id`, …) and add `year`, `month`, `_ingested_at`. Loaded via
+      pandas `write_pandas` (PUT + COPY under the hood) with
+      `use_logical_type=True` so timestamps land as TIMESTAMP, not epoch NUMBER
+- [x] `taxi_zone_lookup.csv` loaded into `analytics.raw.zone_lookup` with quoted,
+      case-sensitive columns — `dim_zones` reads `"LocationID"` etc., so casing
+      must be preserved
+- [x] Staging filters out invalid rows (negative fares, zero/negative duration,
+      bad payment types) and dedups the trip grain so tests pass — the raw file
+      contains them; from Stage 2 the lake path delivers pre-cleaned data and
+      these filters become harmless no-ops
+- [x] dbt: `stg_trips` → `fct_trips` (incremental merge on `trip_sk`) /
+      `dim_zones` (table) / `dim_date` (table, built from a `dbt_utils` spine)
+- [x] `dbt build` green: all models materialize and all 11 tests pass
+      (incl. `unique` on both dimension keys)
+- [x] Loads are idempotent: re-running the pandas load (`overwrite=True`) +
+      `dbt build` changes nothing — a second/third build is a no-op, counts hold
+      (fct_trips 2,788,205 · dim_zones 265 · dim_date 366)
 
 **Done when:** `dbt build` succeeds against Snowflake on the directly-loaded
-raw data, and a second load + build run is a no-op.
+raw data, and a second load + build run is a no-op. ✓
 
 ### Stage 2 — Batch lake path: Spark bronze → silver → gold
 - [ ] `ingest_bronze.py` lands raw parquet in MinIO bronze, partitioned by month

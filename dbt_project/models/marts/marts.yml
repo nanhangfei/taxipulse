@@ -9,14 +9,28 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_zones')
-              field: zone_id
+              arguments:
+                to: ref('dim_zones')
+                field: zone_id
       - name: payment_type
         tests:
           - accepted_values:
-              values: [1, 2, 3, 4, 5, 6]
+              arguments:
+                values: [1, 2, 3, 4, 5, 6]
       - name: trip_duration_minutes
         tests: [not_null]
+
+  - name: dim_zones
+    description: One row per TLC taxi zone.
+    columns:
+      - name: zone_id
+        tests: [unique, not_null]
+
+  - name: dim_date
+    description: One row per calendar day (2024).
+    columns:
+      - name: date_day
+        tests: [unique, not_null]
 
 exposures:
   - name: taxi_batch_dashboard

@@ -1,3 +1,7 @@
+-- Small conformed dimension: full-refresh table, not incremental
+-- (the marts/ default is incremental, which would append duplicates here).
+{{ config(materialized='table') }}
+
 select
     "LocationID"::int as zone_id,
     "Borough"         as borough,
