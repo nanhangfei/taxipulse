@@ -161,6 +161,11 @@ table later is close to a config-only change.
 > users, monthly resource monitor) is kept as a reference but not run here.
 > dbt materializes into `dbt_staging` / `dbt_marts` (profile schema + model schema).
 
+Run dbt via the Makefile wrappers from the repo root — they load the Snowflake
+vars from `.env`, use the project venv, and pass `--profiles-dir .`:
+`make dbt-debug` (connection check), `make dbt-build` (deps + build),
+`make dbt-test` (tests only).
+
 - [x] dbt installed locally in its own venv: `pip install
       dbt-snowflake==1.12.0` (same pin as CI; it is not in the Airflow
       image until Stage 3)

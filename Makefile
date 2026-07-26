@@ -1,4 +1,8 @@
-.PHONY: up up-streaming down clean init-data lint test dbt-build soda-scan
+.PHONY: up up-streaming down clean init-data lint test dbt-debug dbt-build dbt-test soda-scan
+
+# Load only the Snowflake/dbt vars from .env (the AIRFLOW_CONN_* URIs contain
+# '&' and break shell sourcing); shared by the dbt-* targets below.
+DBT_ENV = set -a && source <(grep -E "^(SNOWFLAKE_|DBT_SCHEMA)=" .env) && set +a
 
 up:                   ## batch stack only; streaming services are behind a profile until Stage 7
 	docker compose up -d --build
@@ -25,8 +29,14 @@ lint:
 test:
 	pytest -q tests/
 
-dbt-build:
-	cd dbt_project && dbt deps && dbt build --target dev
+dbt-debug:            ## verify the Snowflake connection (key-pair)
+	bash -c '$(DBT_ENV) && cd dbt_project && ../.venv/bin/dbt debug --profiles-dir .'
+
+dbt-build:            ## load Snowflake creds from .env (key-pair), then dbt deps + build
+	bash -c '$(DBT_ENV) && cd dbt_project && ../.venv/bin/dbt deps && ../.venv/bin/dbt build --profiles-dir .'
+
+dbt-test:             ## run dbt tests only (key-pair)
+	bash -c '$(DBT_ENV) && cd dbt_project && ../.venv/bin/dbt deps && ../.venv/bin/dbt test --profiles-dir .'
 
 soda-scan:
 	soda scan -d snowflake_dev -c soda/configuration.yml soda/checks/
