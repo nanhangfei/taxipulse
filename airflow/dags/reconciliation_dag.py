@@ -13,13 +13,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from airflow.datasets import Dataset
 from airflow.decorators import dag, task
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+from airflow.sdk import Asset
+from alerting import slack_alert  # reuse the same alerting
 
-from monthly_batch_dag import slack_alert  # reuse the same alerting
-
-GOLD_DATASET = Dataset("s3a://gold/fct_trips")
+GOLD_ASSET = Asset("s3a://gold/fct_trips")
 TOLERANCE = 0.01
 
 RECON_SQL = """
@@ -56,7 +55,7 @@ LIMIT 50
 
 @dag(
     dag_id="lambda_reconciliation",
-    schedule=[GOLD_DATASET],          # data-aware: runs whenever gold updates
+    schedule=[GOLD_ASSET],            # data-aware: runs whenever gold updates
     start_date=datetime(2024, 1, 1),
     catchup=False,
     default_args={"owner": "data-eng", "retries": 1,

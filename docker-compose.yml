@@ -3,13 +3,15 @@
 # Bring up:  make up
 x-airflow-common: &airflow-common
   build: ./airflow
-  image: taxipulse-airflow:2.9.3
+  image: taxipulse-airflow:3.3.0
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_PG_PASSWORD}@airflow-postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET}
+    # Airflow 3 defaults to Simple Auth Manager; FAB keeps admin/password login.
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET}
     # --- OpenLineage: cross-tool lineage emitted to Marquez ---
     AIRFLOW__OPENLINEAGE__TRANSPORT: '{"type":"http","url":"http://marquez:5000","endpoint":"api/v1/lineage"}'
     AIRFLOW__OPENLINEAGE__NAMESPACE: nyc_taxi_platform
@@ -35,7 +37,7 @@ x-airflow-common: &airflow-common
 services:
   # ---------------------------------------------------------------- lake
   minio:
-    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -48,8 +50,10 @@ services:
       retries: 5
 
   minio-init:
-    image: minio/mc:RELEASE.2024-06-12T14-34-03Z
-    depends_on: [minio]
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy  # else mc races the server → "connection refused", buckets skipped
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
@@ -58,7 +62,8 @@ services:
 
   # ------------------------------------------------------------- streaming
   kafka:
-    image: confluentinc/cp-kafka:7.6.1
+    profiles: [streaming]  # Stage 7 only — nothing produces/consumes before then
+    image: confluentinc/cp-kafka:8.3.0  # CP 8.x = Kafka 4.x (KRaft-only)
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -78,7 +83,8 @@ services:
 
   # GAP FIX #2: schema governance — producer/consumer contract lives here
   schema-registry:
-    image: confluentinc/cp-schema-registry:7.6.1
+    profiles: [streaming]  # Stage 7 only
+    image: confluentinc/cp-schema-registry:8.3.0
     depends_on:
       kafka:
         condition: service_healthy
@@ -89,7 +95,8 @@ services:
     ports: ["8081:8081"]
 
   kafka-init:
-    image: confluentinc/cp-kafka:7.6.1
+    profiles: [streaming]  # Stage 7 only
+    image: confluentinc/cp-kafka:8.3.0
     depends_on:
       kafka:
         condition: service_healthy
@@ -118,20 +125,19 @@ services:
 
   # -------------------------------------------------------------- compute
   spark-master:
-    image: bitnamilegacy/spark:3.5.1  # bitnami/ tags were pulled from Docker Hub (Broadcom, 2025); legacy org is a frozen archive
-    environment: { SPARK_MODE: master }
+    image: apache/spark:3.5.9  # official image; bitnami/bitnamilegacy tags are a frozen archive capped at 3.5.6
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     ports: ["8082:8080", "7077:7077"]
   spark-worker:
-    image: bitnamilegacy/spark:3.5.1  # bitnami/ tags were pulled from Docker Hub (Broadcom, 2025); legacy org is a frozen archive
+    image: apache/spark:3.5.9
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_MEMORY: 2G
     depends_on: [spark-master]
 
   flink-jobmanager:
     profiles: [streaming]  # Stage 7 only
-    image: flink:1.19-scala_2.12-java11
+    image: flink:2.3.0-java17  # Scala-free distro; SQL/PyFlink job needs no Scala
     command: jobmanager
     ports: ["8083:8081"]
     environment:
@@ -146,7 +152,7 @@ services:
         execution.checkpointing.mode: EXACTLY_ONCE
   flink-taskmanager:
     profiles: [streaming]  # Stage 7 only
-    image: flink:1.19-scala_2.12-java11
+    image: flink:2.3.0-java17  # Scala-free distro; SQL/PyFlink job needs no Scala
     command: taskmanager
     depends_on: [flink-jobmanager]
     environment:
@@ -156,7 +162,7 @@ services:
 
   # ---------------------------------------------------------- orchestration
   airflow-postgres:
-    image: postgres:15
+    image: postgres:17
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: ${AIRFLOW_PG_PASSWORD}
@@ -172,26 +178,40 @@ services:
     entrypoint: /bin/bash
     command: -c "airflow db migrate && airflow users create --username admin --password ${AIRFLOW_ADMIN_PASSWORD} --firstname a --lastname d --role Admin --email admin@example.com"
 
-  airflow-webserver:
+  # api-server/scheduler/dag-processor must wait for the DB migration to FINISH,
+  # not just for airflow-init to start — else they boot on an un-migrated DB and
+  # crash with "Database migration required".
+  airflow-api-server:
     <<: *airflow-common
-    command: webserver
+    command: api-server
     ports: ["8080:8080"]
-    depends_on: [airflow-init]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
 
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
-    depends_on: [airflow-init]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
 
   # ------------------------------------------------- GAP FIX #4: lineage
   marquez-db:
-    image: postgres:15
+    image: postgres:17
     environment:
       POSTGRES_USER: marquez
       POSTGRES_PASSWORD: ${MARQUEZ_PG_PASSWORD}
       POSTGRES_DB: marquez
   marquez:
-    image: marquezproject/marquez:0.47.0
+    image: marquezproject/marquez:0.50.0
     environment:
       MARQUEZ_CONFIG: /usr/src/app/marquez.yml
       POSTGRES_HOST: marquez-db
@@ -204,24 +224,25 @@ services:
       - ./marquez/marquez.yml:/usr/src/app/marquez.yml:ro
     depends_on: [marquez-db]
   marquez-web:
-    image: marquezproject/marquez-web:0.47.0
+    image: marquezproject/marquez-web:0.50.0
     environment:
       MARQUEZ_HOST: marquez
       MARQUEZ_PORT: 5000
+      WEB_PORT: 3000  # 0.50.0 reads its own listen port from WEB_PORT (else "listening on undefined")
     ports: ["3000:3000"]
     depends_on: [marquez]
 
   # ----------------------------------------------- GAP FIX #5: monitoring
   statsd-exporter:
-    image: prom/statsd-exporter:v0.26.1
+    image: prom/statsd-exporter:v0.29.0
     ports: ["9102:9102"]
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v3.13.1
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports: ["9090:9090"]
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:13.1.1
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     volumes:
@@ -231,7 +252,7 @@ services:
 
   # -------------------------------------------- GAP FIX #1 (stretch): Vault
   vault:
-    image: hashicorp/vault:1.17
+    image: hashicorp/vault:1.20.4
     cap_add: [IPC_LOCK]
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_TOKEN}

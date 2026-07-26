@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: pip install ruff pytest pyspark==3.5.1
+      - run: pip install ruff pytest pyspark==3.5.9
       - run: ruff check spark_jobs producer flink_jobs airflow/dags
       - run: pytest -q tests/ || test ! -d tests   # pass if no tests dir yet
 
@@ -30,7 +30,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: pip install apache-airflow==2.9.3 apache-airflow-providers-snowflake
+      # standard provider ships BashOperator in Airflow 3 (an extra, not a core
+      # dep); common-sql (SQLExecuteQueryOperator) comes via the snowflake provider.
+      - run: pip install apache-airflow==3.3.0 apache-airflow-providers-snowflake apache-airflow-providers-standard
       - name: DAGs import without errors
         run: |
           export AIRFLOW_HOME=$(mktemp -d)

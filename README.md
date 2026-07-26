@@ -15,18 +15,18 @@ Docker Compose · GitHub Actions · Metabase (Stage 6) · Power BI (design docs)
 | Component | Version | Pinned in |
 |---|---|---|
 | Python | 3.11 | `producer/Dockerfile`, CI |
-| Apache Airflow | 2.9.3 (python3.11 image) | `docker-compose.yml`, CI |
-| Apache Spark / PySpark | 3.5.1 (`bitnamilegacy` image — bitnami tags were pulled from Docker Hub in 2025) | `docker-compose.yml`, CI |
-| Apache Flink | 1.19 (scala 2.12, java 11) | `docker-compose.yml` |
-| Kafka (Confluent Platform) | cp 7.6.1 (≈ Kafka 3.6) | `docker-compose.yml` |
-| Schema Registry | cp 7.6.1 | `docker-compose.yml` |
-| MinIO / mc | RELEASE.2024-06-13 / 2024-06-12 | `docker-compose.yml` |
-| PostgreSQL (Airflow + Marquez) | 15 | `docker-compose.yml` |
-| Marquez (+ web UI) | 0.47.0 | `docker-compose.yml` |
-| Prometheus | v2.53.0 | `docker-compose.yml` |
-| statsd-exporter | v0.26.1 | `docker-compose.yml` |
-| Grafana | 11.1.0 | `docker-compose.yml` |
-| Vault | 1.17 | `docker-compose.yml` |
+| Apache Airflow | 3.3.0 (python3.11 image) | `docker-compose.yml`, CI |
+| Apache Spark / PySpark | 3.5.9 (official `apache/spark` image; standalone master/worker via `spark-class`) | `docker-compose.yml`, CI |
+| Apache Flink | 2.3.0 (java 17, Scala-free) | `docker-compose.yml` |
+| Kafka (Confluent Platform) | cp 8.3.0 (≈ Kafka 4.x, KRaft-only) | `docker-compose.yml` |
+| Schema Registry | cp 8.3.0 | `docker-compose.yml` |
+| MinIO / mc | RELEASE.2025-09-07 / 2025-08-13 (community edition archived Apr 2026 — last releases) | `docker-compose.yml` |
+| PostgreSQL (Airflow + Marquez) | 17 (newest in Airflow 3.3 / Marquez supported range; 18 is not yet) | `docker-compose.yml` |
+| Marquez (+ web UI) | 0.50.0 | `docker-compose.yml` |
+| Prometheus | v3.13.1 | `docker-compose.yml` |
+| statsd-exporter | v0.29.0 (v0.30.0 has no Docker Hub image yet) | `docker-compose.yml` |
+| Grafana | 13.1.1 | `docker-compose.yml` |
+| Vault | 1.20.4 | `docker-compose.yml` |
 | dbt (dbt-snowflake) | 1.8.3 | CI (`.github/workflows/ci.yml`) |
 | dbt_utils package | 1.2.0 | `dbt_project/packages.yml` |
 | confluent-kafka (Python, +avro) | 2.4.0 | `producer/requirements.txt` |
@@ -34,14 +34,14 @@ Docker Compose · GitHub Actions · Metabase (Stage 6) · Power BI (design docs)
 | Soda Core | *not pinned yet* | — (installed ad hoc by `make soda-scan`) |
 | Snowflake | SaaS (no version) | — |
 
-Floating tags to be aware of: `flink:1.19` and `postgres:15` track the latest
-patch release, `vault:1.17` the latest minor patch; Soda has no pin at all.
-Tightening these is part of Stage 5 (pinned-versions review).
+Floating tags to be aware of: `postgres:17` tracks the latest patch release;
+Soda has no pin at all. Tightening these is part of Stage 5 (pinned-versions
+review).
 
 **Processing split:** Spark (DataFrame API) handles lake-layer heavy lifting —
 parsing, validation, quarantine, partitioned writes. Once data reaches the
 warehouse, all modeling is SQL: dbt models on Snowflake, DELETE+COPY loads via
-SnowflakeOperator, and quality checks (dbt tests / Soda) compile to SQL. Even
+SQLExecuteQueryOperator, and quality checks (dbt tests / Soda) compile to SQL. Even
 the streaming job is written in Flink SQL, not the DataStream API.
 
 ## Architecture
@@ -84,17 +84,8 @@ demonstrably true (not just "code exists") before moving on; work lands as one
 or more commits per stage.
 
 ### Stage 0 — Foundations: local stack boots
-- [ ] Git repository with initial commit; `.env` from `.env.example`
-- [ ] `make init-data` downloads one month of TLC parquet
-- [ ] Core services healthy under Docker Compose: MinIO, Kafka, Schema
-      Registry, Postgres, Airflow webserver/scheduler
-- [ ] MinIO buckets (bronze/silver/gold/quarantine) auto-created
-
 **Done when:** `make up` brings the stack to healthy and every UI in the
-walkthrough checklist below is reachable.
-
-<details>
-<summary><b>Stage 0 walkthrough</b> (step-by-step)</summary>
+checklist below is reachable.
 
 #### 1. Initial commit
 
@@ -135,9 +126,11 @@ ls -lh data/   # expect two files with real sizes (~48 MB parquet + small CSV)
 #### 4. Bring the stack up and verify
 
 Prerequisite: Docker Desktop running with **at least 8 GB memory allocated**
-(Settings → Resources). The stack runs ~15 containers (streaming services —
-replay producer + Flink — are behind a compose `streaming` profile and don't
-start until Stage 7); the default 2 GB allocation causes confusing OOM kills.
+(Settings → Resources). The stack runs ~16 containers (streaming services —
+Kafka, Schema Registry, the replay producer, and Flink — are behind a compose
+`streaming` profile and don't start until Stage 7, since nothing produces or
+consumes from them before then); the default 2 GB allocation causes confusing
+OOM kills.
 
 ```bash
 make up            # first run builds images — takes a while
@@ -145,24 +138,14 @@ docker compose ps  # verify STATUS column; re-check after 2 min (crash loops bri
 ```
 
 Verification checklist:
-- [ ] All containers `Up` / `healthy` in `docker compose ps`, and stay that way
-- [ ] Airflow UI at http://localhost:8080 (login `admin` / `AIRFLOW_ADMIN_PASSWORD`)
-- [ ] MinIO console at http://localhost:9001 shows bronze/silver/gold/quarantine
+- [x] All containers `Up` / `healthy` in `docker compose ps`, and stay that way
+- [x] MinIO console at http://localhost:9001 shows bronze/silver/gold/quarantine
       buckets (auto-created by the `mc` init container)
-- [ ] Schema Registry http://localhost:8081/subjects returns `[]`
-- [ ] Grafana :3001 · Marquez :3000 · Prometheus :9090 reachable
-      (Flink :8083 only appears under `make up-streaming`, Stage 7)
-
-#### Common failure modes
-
-| Symptom | Likely cause / fix |
-|---|---|
-| Container fails to bind port | Something local already uses 8080/3000/9090 — `lsof -i :8080` |
-| Airflow UI 502s | Init container not finished — `docker compose logs airflow-init` |
-| Flink unhealthy (streaming profile) | Missing Kafka/Avro connector JARs — known TODO, fixed in Stage 7; before then it only needs to start |
-| Containers randomly dying | Docker memory allocation too low |
-
-</details>
+- [x] Airflow UI at http://localhost:8080 (login `admin` / `AIRFLOW_ADMIN_PASSWORD`)
+- [x] Spark master UI at http://localhost:8082 shows 1 worker registered
+- [x] Grafana :3001 · Marquez :3000 · Prometheus :9090 reachable
+      (Kafka :9092, Schema Registry :8081, and Flink :8083 only appear under
+      `make up-streaming`, Stage 7)
 
 ### Stage 1 — Warehouse & modeling: Snowflake + dbt
 This stage needs only a Snowflake account — no Docker services. Until the
@@ -272,10 +255,10 @@ product on its own.
 
 ### Stage 7 — Streaming capstone: Kafka → Flink → realtime marts
 The batch product ships first (Stages 1–6); the speed layer upgrades it to
-full lambda architecture as a capstone. Kafka, Schema Registry, and the
-topics have been running since Stage 0, but the replay producer and Flink
-sit behind the compose `streaming` profile — they don't run at all until
-this stage. Start everything with `make up-streaming`.
+full lambda architecture as a capstone. Kafka, Schema Registry, the topics,
+the replay producer, and Flink all sit behind the compose `streaming`
+profile — none of them run before this stage. Start everything with
+`make up-streaming`.
 
 - [ ] Replay producer emits Avro events through Schema Registry with realistic
       event-time skew and bursts; late/bad events go to DLQ/late topics

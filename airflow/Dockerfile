@@ -1,14 +1,17 @@
-FROM apache/airflow:2.9.3-python3.11
+FROM apache/airflow:3.3.0-python3.11
 
 # Providers deliberately UNPINNED here: the constraints file pins the exact
-# provider versions tested with Airflow 2.9.3. Adding our own pins contradicts
+# provider versions tested with Airflow 3.3.0. Adding our own pins contradicts
 # it and pip's resolver melts down (ResolutionTooDeep) — same failure the old
 # _PIP_ADDITIONAL_REQUIREMENTS startup install hit.
+# fab provider: Airflow 3's new default is Simple Auth Manager; fab keeps the
+# admin/password login this project documents everywhere.
 RUN pip install --no-cache-dir \
+      apache-airflow-providers-fab \
       apache-airflow-providers-snowflake \
       apache-airflow-providers-apache-spark \
       apache-airflow-providers-openlineage \
-      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.9.3/constraints-3.11.txt"
+      --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.0/constraints-3.11.txt"
 
 # dbt (Stage 3) and Soda (Stage 4) are NOT in this image yet. Installing
 # dbt-snowflake + soda-core-snowflake together is unresolvable for pip

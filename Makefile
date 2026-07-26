@@ -1,4 +1,4 @@
-.PHONY: up up-streaming down init-data lint test dbt-build soda-scan
+.PHONY: up up-streaming down clean init-data lint test dbt-build soda-scan
 
 up:                   ## batch stack only; streaming services are behind a profile until Stage 7
 	docker compose up -d --build
@@ -6,7 +6,10 @@ up:                   ## batch stack only; streaming services are behind a profi
 up-streaming:         ## Stage 7: batch stack + replay producer + Flink
 	docker compose --profile streaming up -d --build
 
-down:
+down:                 ## stop & remove all containers, batch + streaming (keeps volumes)
+	docker compose --profile streaming down
+
+clean:                ## like down, but also wipes named volumes (minio-data, airflow-pg)
 	docker compose --profile streaming down -v
 
 init-data:            ## download one month of TLC data for the replay producer & Spark

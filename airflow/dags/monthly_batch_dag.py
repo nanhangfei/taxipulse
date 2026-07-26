@@ -8,38 +8,22 @@ Production behaviors implemented here (not just mentioned):
   * dbt BUILD (tests gate downstream models), then Soda as an independent
     post-load operational gate
   * Slack on_failure_callback on every task (gap fix #5, minimal viable alerting)
-  * Airflow Dataset emitted on completion so downstream DAGs are data-aware
+  * Airflow Asset emitted on completion so downstream DAGs are data-aware
 """
 from __future__ import annotations
 
-import json
 import os
-import urllib.request
 from datetime import datetime, timedelta
 
-from airflow.datasets import Dataset
 from airflow.decorators import dag, task
-from airflow.operators.bash import BashOperator
-from airflow.providers.snowflake.operators.snowflake import SnowflakeOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.sdk import Asset
+from alerting import slack_alert
 
-GOLD_DATASET = Dataset("s3a://gold/fct_trips")
+GOLD_ASSET = Asset("s3a://gold/fct_trips")
 DBT_DIR = "/opt/airflow/dbt_project"
 SODA_DIR = "/opt/airflow/soda"
-
-
-def slack_alert(context) -> None:
-    """Minimal Slack alerting — reads webhook from env, never from code."""
-    url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not url:
-        return
-    ti = context["task_instance"]
-    msg = {
-        "text": (f":red_circle: *{ti.dag_id}.{ti.task_id}* failed "
-                 f"(run {context['ds']})\n<{ti.log_url}|logs>")
-    }
-    req = urllib.request.Request(
-        url, data=json.dumps(msg).encode(), headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10)
 
 
 default_args = {
@@ -102,9 +86,9 @@ def monthly_batch_pipeline():
     gold = spark_task("load_gold", "{{ logical_date.year }} {{ logical_date.month }}")
 
     # Idempotent Snowflake load: delete the month, then COPY it back in.
-    snowflake_load = SnowflakeOperator(
+    snowflake_load = SQLExecuteQueryOperator(
         task_id="snowflake_copy_into_raw",
-        snowflake_conn_id="snowflake_default",
+        conn_id="snowflake_default",
         sql="""
             DELETE FROM RAW_DB.TLC.FCT_TRIPS_RAW
              WHERE year = {{ logical_date.year }} AND month = {{ logical_date.month }};
@@ -130,7 +114,7 @@ def monthly_batch_pipeline():
     publish = BashOperator(
         task_id="publish_gold_dataset",
         bash_command="echo gold updated",
-        outlets=[GOLD_DATASET],
+        outlets=[GOLD_ASSET],
     )
 
     p >> download >> bronze >> silver >> gold >> snowflake_load >> dbt_build >> soda_scan >> publish
