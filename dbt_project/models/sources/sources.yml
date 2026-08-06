@@ -4,7 +4,10 @@ sources:
     database: analytics
     schema: raw
     tables:
-      - name: fct_trips_raw
+      # Stage 2: the lake path (Spark bronze->silver->gold) feeds this table via
+      # scripts/load_gold_to_snowflake.py. It replaces the Stage 1 direct raw
+      # load (fct_trips_raw), which is left in place but no longer referenced.
+      - name: fct_trips_gold
         config:
           loaded_at_field: _ingested_at
           freshness:

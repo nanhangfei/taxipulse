@@ -199,22 +199,66 @@ vars from `.env`, use the project venv, and pass `--profiles-dir .`:
 raw data, and a second load + build run is a no-op. ✓
 
 ### Stage 2 — Batch lake path: Spark bronze → silver → gold
-- [ ] `ingest_bronze.py` lands raw parquet in MinIO bronze, partitioned by month
-- [ ] `transform_silver.py` cleans/validates; rejects go to quarantine **with
-      reject reasons**, never dropped
-- [ ] `load_gold.py` writes aggregates with dynamic partition overwrite
-- [ ] Re-running the same month twice produces identical output (idempotency
-      proven, not assumed)
-- [ ] Gold → Snowflake load path works — Snowflake (SaaS) cannot reach local
-      MinIO, so either `PUT` gold files to an internal stage (reusing the
-      Stage 1 pattern) or move the lake to real S3 with `CREATE STAGE`;
-      idempotent via DELETE+COPY per month
-- [ ] dbt `source()` re-pointed from the Stage 1 raw table to the gold-fed
-      table; marts row counts reconcile with gold-layer counts
+Spark talks to MinIO over `s3a://`, which needs AWS jars the official
+`apache/spark` image doesn't ship — so `spark_jobs/Dockerfile` layers
+`hadoop-aws` + `aws-java-sdk-bundle` (pinned to the image's Hadoop 3.3.4) onto
+it. Jobs and `data/` are mounted (not baked) into both master and worker.
+
+- [x] `ingest_bronze.py` lands raw parquet in MinIO bronze, partitioned by month
+- [x] `transform_silver.py` cleans/validates; rejects go to quarantine **with
+      reject reasons**, never dropped (Jan 2024: 38,345 quarantined — negative
+      fare 37,444 / zero-or-negative duration 870 / absurd distance 31)
+- [x] `load_gold.py` writes the trip fact + daily-zone aggregates with dynamic
+      partition overwrite
+- [x] Re-running the same month is idempotent: dynamic partition overwrite on
+      the lake, DELETE-then-load per month into Snowflake, dbt incremental merge
+      — a second full run changes no counts (gold 2,926,279 · fct_trips 2,788,194)
+- [x] Gold → Snowflake via `scripts/load_gold_to_snowflake.py`: pulls gold
+      parquet from MinIO (pyarrow) and pushes it with the connector's PUT+COPY
+      (`write_pandas`) into `analytics.raw.fct_trips_gold` — the internal-stage
+      pattern from Stage 1, idempotent via DELETE per month
+- [x] dbt `source()` re-pointed from the Stage 1 raw table (`fct_trips_raw`) to
+      the gold-fed table (`fct_trips_gold`); `dbt build` green, staging filters
+      now no-ops because silver already cleaned the data
 
 **Done when:** one month flows raw → gold by hand-running the three jobs, a
 deliberately corrupted record shows up in quarantine with its reason, and
-`dbt build` is green on top of the gold-fed source.
+`dbt build` is green on top of the gold-fed source. ✓
+
+**Running it** — all commands are run from the repo root.
+
+```bash
+# 0. one-time prerequisites
+make init-data                  # download Jan 2024 parquet + zone lookup (if not already in data/)
+docker compose build spark-master   # build the custom Spark image (S3A jars) — needed once
+
+# 1. start the batch stack (MinIO, Spark, ...)
+make up                         # or just: docker compose up -d minio minio-init spark-master spark-worker
+
+# 2. run the lake chain (bronze -> silver -> gold)
+make spark-batch                # all three for Jan 2024
+#   or step-by-step to inspect between stages:
+#   make spark-bronze           # local parquet -> s3a://bronze
+#   make spark-silver           # bronze -> s3a://silver (+ quarantine)
+#   make spark-gold             # silver -> s3a://gold
+
+# 3. load gold into Snowflake, then model with dbt
+make snowflake-load-gold        # s3a://gold/fct_trips -> analytics.raw.fct_trips_gold
+make dbt-build                  # staging -> marts + tests
+```
+
+Every job target takes `YEAR`/`MONTH`/`RAW` overrides to process another month
+(`RAW` is the path *inside* the container — `./data` is mounted at `/opt/data`,
+so download the file into `data/` first):
+
+```bash
+make spark-batch YEAR=2024 MONTH=2 RAW=/opt/data/yellow_tripdata_2024-02.parquet
+make snowflake-load-gold YEAR=2024 MONTH=2
+make dbt-build
+```
+
+Watch it run: **Spark UI** at `http://localhost:8082` (job progress) and the
+**MinIO console** at `http://localhost:9001` (buckets filling).
 
 ### Stage 3 — Orchestration: Airflow owns the batch path
 - [ ] `monthly_batch_pipeline` DAG runs Stage 2 end-to-end on a schedule

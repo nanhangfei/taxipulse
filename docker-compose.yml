@@ -124,15 +124,31 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------------------- compute
+  # Built from spark_jobs/Dockerfile: official apache/spark:3.5.9 + S3A jars so
+  # jobs can read/write s3a://... on MinIO. Jobs and source data are mounted
+  # (not baked) so edits don't need a rebuild; both master and worker get the
+  # mounts because in client mode the driver (master) plans splits and the
+  # executor (worker) reads them — both must see /opt/data and /opt/spark_jobs.
   spark-master:
-    image: apache/spark:3.5.9  # official image; bitnami/bitnamilegacy tags are a frozen archive capped at 3.5.6
+    build: ./spark_jobs
+    image: taxipulse/spark:3.5.9
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     ports: ["8082:8080", "7077:7077"]
+    environment: &spark-env
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: &spark-vols
+      - ./spark_jobs:/opt/spark_jobs
+      - ./data:/opt/data
   spark-worker:
-    image: apache/spark:3.5.9
+    build: ./spark_jobs
+    image: taxipulse/spark:3.5.9
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
     environment:
+      <<: *spark-env
       SPARK_WORKER_MEMORY: 2G
+    volumes: *spark-vols
     depends_on: [spark-master]
 
   flink-jobmanager:

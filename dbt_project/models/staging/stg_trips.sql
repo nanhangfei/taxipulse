@@ -1,9 +1,9 @@
--- Staging: clean + conform raw TLC trips to the trip grain.
--- These filters exist because the raw January file contains invalid rows
--- (negative fares, zero/negative duration, bad payment types). From Stage 2
--- the lake path delivers pre-cleaned data and these become harmless no-ops.
+-- Staging: clean + conform TLC trips to the trip grain.
+-- Reads the gold-fed table (Stage 2 lake path). The Spark silver step already
+-- quarantines invalid rows, so these filters are now harmless no-ops kept as a
+-- defensive backstop / documentation of the trip-grain contract.
 with source as (
-    select * from {{ source('tlc_raw', 'fct_trips_raw') }}
+    select * from {{ source('tlc_raw', 'fct_trips_gold') }}
     where pickup_datetime < dropoff_datetime      -- positive trip duration
       and fare_amount  >= 0                        -- no negative fares
       and total_amount >= 0

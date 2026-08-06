@@ -17,7 +17,11 @@ Prometheus/Grafana, OpenLineage/Marquez, Docker Compose, GitHub Actions, Metabas
 
 ## Known TODOs
 - Flink image needs Kafka/Avro connector JARs (custom Dockerfile)
-- Snowflake MINIO_GOLD_STAGE needs CREATE STAGE (or switch to real S3)
-- dim_date model not yet written
-- No pytest suite for Spark jobs yet
+- No pytest suite for Spark jobs yet (Stage 5)
 - Pinned versions may need bumps
+
+## Resolved
+- Spark→MinIO S3A jars: spark_jobs/Dockerfile adds hadoop-aws + aws-sdk-bundle
+- Gold→Snowflake: done via write_pandas PUT+COPY (internal stage) in
+  scripts/load_gold_to_snowflake.py, not an external CREATE STAGE (Stage 2)
+- dim_date model written (Stage 1)

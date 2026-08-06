@@ -8,13 +8,16 @@ import sys
 from pyspark.sql import functions as F
 from common import spark_session
 
-RULES = {
-    "null_pickup": F.col("pickup_datetime").isNull(),
-    "null_dropoff": F.col("dropoff_datetime").isNull(),
-    "zero_or_negative_duration": F.col("dropoff_datetime") <= F.col("pickup_datetime"),
-    "negative_fare": F.col("fare_amount") < 0,
-    "absurd_distance": F.col("trip_distance") > 200,
-}
+# Quality rules, in priority order. Built lazily inside main() because F.col()
+# needs an active Spark JVM — evaluating it at import time raises AssertionError.
+def _rules():
+    return {
+        "null_pickup": F.col("pickup_datetime").isNull(),
+        "null_dropoff": F.col("dropoff_datetime").isNull(),
+        "zero_or_negative_duration": F.col("dropoff_datetime") <= F.col("pickup_datetime"),
+        "negative_fare": F.col("fare_amount") < 0,
+        "absurd_distance": F.col("trip_distance") > 200,
+    }
 
 def main(year: int, month: int) -> None:
     spark = spark_session(f"silver-{year}-{month:02d}")
@@ -22,7 +25,7 @@ def main(year: int, month: int) -> None:
           .where((F.col("year") == year) & (F.col("month") == month)))
 
     reject_reason = F.lit(None).cast("string")
-    for name, cond in RULES.items():
+    for name, cond in _rules().items():
         reject_reason = F.when(cond & reject_reason.isNull(), F.lit(name)).otherwise(reject_reason)
     df = df.withColumn("_reject_reason", reject_reason)
 
